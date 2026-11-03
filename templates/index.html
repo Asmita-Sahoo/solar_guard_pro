@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SolarGuard</title>
+<style>
+  :root { --bg:#f5f7fa; --card:#fff; --ink:#1b2430; --mute:#5b6675; --accent:#e8890c; --line:#e1e6ec; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:#16324f; color:#fff; padding:18px 20px; }
+  header h1 { margin:0; font-size:22px; } header p { margin:4px 0 0; color:#c7d6e6; font-size:14px; }
+  main { max-width:900px; margin:20px auto; padding:0 16px; display:grid; gap:16px; }
+  @media (min-width:800px){ main { grid-template-columns: 1fr 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; }
+  label { display:block; font-size:13px; color:var(--mute); margin:10px 0 4px; }
+  input, select { width:100%; padding:9px; border:1px solid var(--line); border-radius:8px; font-size:15px; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  button { margin-top:16px; width:100%; padding:12px; background:var(--accent); color:#fff; border:0;
+           border-radius:8px; font-size:16px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.6; }
+  #preview { max-width:100%; border-radius:8px; margin-top:10px; display:none; }
+  .big { font-size:34px; font-weight:700; } .tag { display:inline-block; padding:3px 10px; border-radius:20px;
+        background:#fdecd2; color:#9a5a00; font-weight:600; font-size:13px; }
+  .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin:2px 0 8px; }
+  .bar > div { height:100%; background:var(--accent); }
+  .rec { background:#eef6ee; border-left:4px solid #3a9d4a; padding:10px 12px; border-radius:6px; margin-top:12px; }
+  .err { color:#b3261e; margin-top:10px; } .hidden { display:none; } small { color:var(--mute); }
+</style>
+</head>
+<body>
+<header><h1>SolarGuard</h1><p>Detect dust &amp; pollution on solar panels, weather-aware</p></header>
+<main>
+  <form id="form" class="card">
+    <label>Solar panel photo</label>
+    <input type="file" id="image" name="image" accept="image/*" required>
+    <img id="preview" alt="preview">
+
+    <div class="row">
+      <div><label>Days since last cleaning</label><input type="number" name="days" value="14" min="0"></div>
+      <div><label>Plant capacity (kW)</label><input type="number" name="capacity" value="5" step="0.1" min="0.1"></div>
+    </div>
+
+    <label>Weather source</label>
+    <select name="mode" id="mode">
+      <option value="auto">Auto (live, by location)</option>
+      <option value="manual">Manual entry</option>
+    </select>
+
+    <div id="auto">
+      <div class="row">
+        <div><label>Latitude</label><input name="lat" value="20.30" step="any"></div>
+        <div><label>Longitude</label><input name="lon" value="85.82" step="any"></div>
+      </div>
+    </div>
+
+    <div id="manual" class="hidden">
+      <div class="row">
+        <div><label>PM2.5 (µg/m³)</label><input name="pm25" value="60" step="any"></div>
+        <div><label>PM10 (µg/m³)</label><input name="pm10" value="110" step="any"></div>
+        <div><label>Humidity (%)</label><input name="humidity" value="55" step="any"></div>
+        <div><label>Wind (m/s)</label><input name="wind" value="3" step="any"></div>
+        <div><label>Rain, last 7 days (mm)</label><input name="rain7" value="0" step="any"></div>
+        <div><label>Temperature (°C)</label><input name="temp" value="32" step="any"></div>
+        <div><label>Rain forecast, next days (mm)</label><input name="rain_forecast" value="0" step="any"></div>
+      </div>
+    </div>
+
+    <button id="go" type="submit">Analyze panel</button>
+    <div id="err" class="err"></div>
+  </form>
+
+  <section id="result" class="card hidden">
+    <span class="tag" id="cls"></span>
+    <div class="big"><span id="loss"></span>% <small>estimated power loss</small></div>
+    <small id="kw"></small>
+    <div class="rec" id="rec"></div>
+    <h4>Image classification</h4><div id="probs"></div>
+    <h4>Model breakdown</h4>
+    <small id="split"></small>
+    <h4>Weather used</h4>
+    <small id="wx"></small>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+$("mode").onchange = e => {
+  $("auto").classList.toggle("hidden", e.target.value !== "auto");
+  $("manual").classList.toggle("hidden", e.target.value !== "manual");
+};
+$("image").onchange = e => {
+  const f = e.target.files[0];
+  if (f) { $("preview").src = URL.createObjectURL(f); $("preview").style.display = "block"; }
+};
+$("form").onsubmit = async e => {
+  e.preventDefault();
+  $("err").textContent = ""; $("go").disabled = true; $("go").textContent = "Analyzing...";
+  try {
+    const res = await fetch("/api/analyze", { method: "POST", body: new FormData($("form")) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "Something went wrong");
+    show(d);
+  } catch (err) { $("err").textContent = err.message; }
+  $("go").disabled = false; $("go").textContent = "Analyze panel";
+};
+function show(d) {
+  $("result").classList.remove("hidden");
+  $("cls").textContent = d.dust_class.replace("_", " ") + " (" + d.confidence + "%)";
+  $("loss").textContent = d.final_loss_pct;
+  $("kw").textContent = "≈ " + d.power_lost_kw + " kW lost at your plant capacity";
+  $("rec").textContent = d.recommendation;
+  $("probs").innerHTML = "";
+  for (const [c, p] of Object.entries(d.class_probs)) {
+    const row = document.createElement("div");
+    row.innerHTML = "<small></small><div class='bar'><div></div></div>";
+    row.querySelector("small").textContent = c.replace("_", " ") + " — " + p + "%";
+    row.querySelector(".bar > div").style.width = p + "%";
+    $("probs").appendChild(row);
+  }
+  $("split").textContent = "Photo-based: " + d.image_loss_pct + "%  |  Weather-based: " + d.weather_loss_pct + "%";
+  const w = d.weather;
+  $("wx").textContent = `PM2.5 ${w.pm25}, PM10 ${w.pm10}, humidity ${w.humidity}%, wind ${w.wind} m/s, ` +
+    `temp ${w.temp}°C, rain (7d) ${w.rain7} mm, rain forecast ${w.rain_forecast ?? 0} mm`;
+}
+</script>
+</body>
+</html>

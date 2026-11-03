@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SolarGuard Pro</title>
+<style>
+  :root { --bg:#f5f7fa; --card:#fff; --ink:#1b2430; --mute:#5b6675; --accent:#e8890c; --line:#e1e6ec; --bad:#c62828; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:#16324f; color:#fff; padding:16px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+  header h1 { margin:0; font-size:21px; } header small { color:#c7d6e6; }
+  main { max-width:1000px; margin:16px auto; padding:0 14px; display:grid; gap:14px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .card h3 { margin:0 0 6px; font-size:13px; color:var(--mute); font-weight:600; }
+  .big { font-size:30px; font-weight:700; } .sub { color:var(--mute); font-size:13px; }
+  .two { display:grid; gap:14px; } @media (min-width:800px){ .two { grid-template-columns:1fr 1.4fr; } }
+  img { width:100%; border-radius:8px; display:block; }
+  canvas { width:100%; height:240px; display:block; }
+  .rec { background:#eef6ee; border-left:4px solid #3a9d4a; padding:10px 12px; border-radius:6px; margin-top:10px; }
+  .rec.bad { background:#fdecea; border-color:var(--bad); }
+  button { padding:10px 14px; border:0; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; color:#fff; background:var(--accent); }
+  button.alt { background:#2e6da4; } button:disabled { opacity:.6; }
+  table { width:100%; border-collapse:collapse; font-size:13px; } th,td { text-align:left; padding:7px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--mute); font-weight:600; } .wrap { overflow-x:auto; }
+  .err { color:var(--bad); font-size:13px; } .tag { padding:2px 8px; border-radius:12px; background:#fdecd2; color:#9a5a00; font-size:12px; font-weight:600; }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>SolarGuard Pro</h1><small>Automatic camera monitoring of solar panel dust</small></div>
+  <div><button id="capBtn">Capture now</button> <button id="cleanBtn" class="alt">Mark cleaned</button></div>
+</header>
+<main>
+  <div class="cards">
+    <div class="card"><h3>Panel status</h3><div class="big" id="cls">-</div><div class="sub" id="when"></div></div>
+    <div class="card"><h3>Estimated power loss</h3><div class="big" id="loss">-</div><div class="sub" id="kw"></div></div>
+    <div class="card"><h3>Cost of this dust</h3><div class="big" id="cost">-</div><div class="sub" id="kwh"></div></div>
+    <div class="card"><h3>Days since cleaning</h3><div class="big" id="days">-</div><div class="sub" id="next"></div></div>
+  </div>
+
+  <div class="two">
+    <div class="card"><h3>Latest capture</h3><img id="shot" alt="latest capture" style="display:none">
+      <div class="rec" id="rec">Waiting for the first reading...</div>
+      <div class="sub" id="wx" style="margin-top:8px"></div><div class="err" id="err"></div></div>
+    <div class="card"><h3>Power loss over time (%)</h3><canvas id="chart"></canvas>
+      <div class="sub">Dashed line = alert level</div></div>
+  </div>
+
+  <div class="card"><h3>History</h3><div class="wrap"><table>
+    <thead><tr><th>Time</th><th>Status</th><th>Class</th><th>Loss %</th><th>Weather data</th><th>Alert</th></tr></thead>
+    <tbody id="rows"></tbody></table></div></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let data = null;
+
+async function load() {
+  try { data = await (await fetch("/api/status")).json(); render(); } catch (e) { $("err").textContent = "Dashboard cannot reach server."; }
+}
+
+function render() {
+  const h = data.history, ok = h.find(r => r.final_loss !== null);
+  $("days").textContent = data.days_since_cleaning;
+  $("next").textContent = data.next_run ? "Next capture: " + data.next_run : "";
+  $("err").textContent = data.last_error ? "Last error: " + data.last_error : "";
+  if (h.length) {
+    const last = h[0];
+    $("shot").src = "/captures/" + last.image; $("shot").style.display = "block";
+    $("when").textContent = last.ts.replace("T", " ");
+  }
+  if (ok) {
+    $("cls").textContent = ok.dust_class.replace("_", " ");
+    $("loss").textContent = ok.final_loss + "%";
+    $("kw").textContent = "≈ " + ok.power_lost_kw + " kW of " + data.capacity_kw + " kW";
+    $("cost").textContent = "₹" + ok.daily_cost_lost + "/day";
+    $("kwh").textContent = "≈ " + ok.daily_kwh_lost + " kWh lost per day (estimate)";
+    $("rec").textContent = ok.recommendation + (ok.status !== "ok" ? "  [" + ok.status + "]" : "");
+    $("rec").className = "rec" + (ok.final_loss >= data.alert_pct ? " bad" : "");
+    const w = ok.weather || {};
+    $("wx").textContent = `Weather (${ok.weather_source}): PM2.5 ${w.pm25}, PM10 ${w.pm10}, humidity ${w.humidity}%, rain forecast ${w.rain_forecast} mm`;
+  }
+  const tb = $("rows"); tb.innerHTML = "";
+  h.slice(0, 15).forEach(r => {
+    const tr = document.createElement("tr");
+    [r.ts.replace("T", " "), r.status, r.dust_class ? r.dust_class.replace("_", " ") : "-",
+     r.final_loss ?? "-", r.weather_source || "-", r.alerted ? "sent" : ""].forEach(v => {
+      const td = document.createElement("td"); td.textContent = v; tr.appendChild(td); });
+    tb.appendChild(tr);
+  });
+  draw(h.filter(r => r.final_loss !== null).reverse());
+}
+
+function draw(pts) {
+  const c = $("chart"), r = devicePixelRatio || 1;
+  c.width = c.clientWidth * r; c.height = c.clientHeight * r;
+  const g = c.getContext("2d"); g.scale(r, r);
+  const W = c.clientWidth, H = c.clientHeight, L = 34, B = 22, T = 8;
+  g.clearRect(0, 0, W, H); g.font = "11px sans-serif"; g.fillStyle = "#5b6675"; g.strokeStyle = "#e1e6ec";
+  const top = Math.max(30, data.alert_pct * 1.6, ...pts.map(p => p.final_loss * 1.2));
+  const y = v => T + (H - T - B) * (1 - v / top);
+  for (let v = 0; v <= top; v += top / 4) { g.beginPath(); g.moveTo(L, y(v)); g.lineTo(W, y(v)); g.stroke(); g.fillText(Math.round(v), 4, y(v) + 4); }
+  g.setLineDash([5, 4]); g.strokeStyle = "#c62828"; g.beginPath(); g.moveTo(L, y(data.alert_pct)); g.lineTo(W, y(data.alert_pct)); g.stroke(); g.setLineDash([]);
+  if (!pts.length) return;
+  const x = i => L + (pts.length === 1 ? (W - L) / 2 : (W - L - 10) * i / (pts.length - 1));
+  g.strokeStyle = "#e8890c"; g.lineWidth = 2; g.beginPath();
+  pts.forEach((p, i) => i ? g.lineTo(x(i), y(p.final_loss)) : g.moveTo(x(i), y(p.final_loss))); g.stroke();
+  g.fillStyle = "#e8890c"; pts.forEach((p, i) => { g.beginPath(); g.arc(x(i), y(p.final_loss), 3, 0, 7); g.fill(); });
+}
+
+$("capBtn").onclick = async () => {
+  $("capBtn").disabled = true; $("capBtn").textContent = "Capturing...";
+  const r = await fetch("/api/capture-now", { method: "POST" });
+  if (!r.ok) $("err").textContent = (await r.json()).error || "Capture failed";
+  $("capBtn").disabled = false; $("capBtn").textContent = "Capture now"; load();
+};
+$("cleanBtn").onclick = async () => {
+  if (!confirm("Record that the panels were cleaned just now?")) return;
+  await fetch("/api/mark-cleaned", { method: "POST" }); load();
+};
+window.onresize = () => data && render();
+load(); setInterval(load, 30000);
+</script>
+</body>
+</html>
